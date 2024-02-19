@@ -70,6 +70,20 @@ class QNetwork:
             self.train_step = tf.compat.v1.train.GradientDescentOptimizer(learning_rate=self.learningRate).minimize(mse,
                                                                                                                     name='train')
 
+class KerasQNetwork:
+    def __init__(self, name, learning_rate):
+        self.learningRate = learning_rate
+        self.name = name
+        self._build_graph()
+        
+    def _build_graph(self):
+        input = tf.keras.layers.Input(shape=(BOARD_SIZE * 3), dtype=tf.float32)
+        dense1 = tf.keras.layers.Dense(BOARD_SIZE * 3 * 9, activation='relu', kernel_initializer=tf.keras.initializers.variance_scaling())(input)
+        self.q_values = tf.keras.layers.Dense(BOARD_SIZE,name='q_values', kernel_initializer=tf.keras.initializers.variance_scaling())(dense1)
+        # self.probabilities = tf.keras.layers.Softmax(name='probabilities')(self.q_values)
+        self.model = tf.keras.models.Model(inputs=input, outputs=[self.q_values])
+        self.model.compile(optimizer=tf.keras.optimizers.legacy.SGD(learning_rate=self.learningRate), loss=tf.keras.losses.MeanSquaredError())
+
 
 class NNQPlayer(Player):
     """
@@ -114,6 +128,15 @@ class NNQPlayer(Player):
         self.values_log = []
         self.name = name
         self.nn = QNetwork(name, learning_rate)
+        self.knn = KerasQNetwork(f'keras_{name}', learning_rate)
+        # self.knn.model.summary()
+        # self.model = tf.keras.models.Sequential([
+        #     tf.keras.layers.InputLayer(input_shape=(BOARD_SIZE * 3,)),
+        #     tf.keras.layers.Dense(BOARD_SIZE * 3 * 9, activation='relu'),
+        #     tf.keras.layers.Dense(BOARD_SIZE),
+        #     tf.keras.layers.Softmax(),
+        # ])
+        # self.model.compile(optimizer=tf.keras.optimizers.SGD(learning_rate=learning_rate), loss=tf.keras.losses.MeanSquaredError())
         self.training = training
         super().__init__()
 
@@ -222,8 +245,16 @@ class NNQPlayer(Player):
             targets = self.calculate_targets()
 
             # We convert the input states we have recorded to feature vectors to feed into the training.
+            # print(f'>>>> board_position_log: {self.board_position_log}')
             nn_input = [self.board_state_to_nn_input(x) for x in self.board_position_log]
-
+            nn_input_array = np.stack(nn_input)
+            target_array = np.stack(targets) 
+            
             # We run the training step with the recorded inputs and new Q value targets.
+            # print(f'>>>> nn_input: {nn_input}')
+            # print(f'>>>> nn_input_array: {nn_input_array}')
+            # print(f'>>>> targets: {targets}')
+            # print(f'>>>> target_array: {target_array}')
+            self.knn.model.fit(nn_input_array, target_array, epochs=1)
             TFSN.get_session().run([self.nn.train_step],
                                    feed_dict={self.nn.input_positions: nn_input, self.nn.target_input: targets})

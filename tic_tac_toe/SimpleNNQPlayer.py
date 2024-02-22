@@ -6,83 +6,24 @@
 
 import numpy as np
 import tensorflow as tf
-from numpy import ndarray
-
-from tic_tac_toe.TFSessionManager import TFSessionManager as TFSN
 
 from tic_tac_toe.Board import Board, BOARD_SIZE, EMPTY, CROSS, NAUGHT
 from tic_tac_toe.Player import Player, GameResult
-
-
-class QNetwork:
-    """
-    Contains a TensorFlow graph which is suitable for learning the Tic Tac Toe Q function
-    """
-
-    def __init__(self, name: str, learning_rate: float):
-        """
-        Constructor for QNetwork. Takes a name and a learning rate for the GradientDescentOptimizer
-        :param name: Name of the network
-        :param learning_rate: Learning rate for the GradientDescentOptimizer
-        """
-        self.learningRate = learning_rate
-        self.name = name
-        self.input_positions = None
-        self.target_input = None
-        self.q_values = None
-        self.probabilities = None
-        self.train_step = None
-        self.build_graph(name)
-
-    def add_dense_layer(self, input_tensor: tf.Tensor, output_size: int, activation_fn=None,
-                        name: str = None) -> tf.Tensor:
-        """
-        Adds a dense Neural Net layer to network input_tensor
-        :param input_tensor: The layer to which we should add the new layer
-        :param output_size: The output size of the new layer
-        :param activation_fn: The activation function for the new layer, or None if no activation function
-        should be used
-        :param name: The optional name of the layer. Useful for saving a loading a TensorFlow graph
-        :return: A new dense layer attached to the `input_tensor`
-        """
-        return tf.compat.v1.layers.dense(input_tensor, output_size, activation=activation_fn,
-                               kernel_initializer=tf.compat.v1.variance_scaling_initializer(),
-                               name=name)
-
-    def build_graph(self, name: str):
-        """
-        Builds a new TensorFlow graph with scope `name`
-        :param name: The scope for the graph. Needs to be unique for the session.
-        """
-        with tf.compat.v1.variable_scope(name):
-            self.input_positions = tf.compat.v1.placeholder(tf.float32, shape=(None, BOARD_SIZE * 3), name='inputs')
-
-            self.target_input = tf.compat.v1.placeholder(tf.float32, shape=(None, BOARD_SIZE), name='targets')
-
-            net = self.input_positions
-
-            net = self.add_dense_layer(net, BOARD_SIZE * 3 * 9, tf.nn.relu)
-
-            self.q_values = self.add_dense_layer(net, BOARD_SIZE, name='q_values')
-
-            self.probabilities = tf.nn.softmax(self.q_values, name='probabilities')
-            mse = tf.compat.v1.losses.mean_squared_error(predictions=self.q_values, labels=self.target_input)
-            self.train_step = tf.compat.v1.train.GradientDescentOptimizer(learning_rate=self.learningRate).minimize(mse,
-                                                                                                                    name='train')
 
 class KerasQNetwork:
     def __init__(self, name, learning_rate):
         self.learningRate = learning_rate
         self.name = name
         self._build_graph()
-        
+         
     def _build_graph(self):
         input = tf.keras.layers.Input(shape=(BOARD_SIZE * 3), dtype=tf.float32)
         dense1 = tf.keras.layers.Dense(BOARD_SIZE * 3 * 9, activation='relu', kernel_initializer=tf.keras.initializers.variance_scaling())(input)
-        self.q_values = tf.keras.layers.Dense(BOARD_SIZE,name='q_values', kernel_initializer=tf.keras.initializers.variance_scaling())(dense1)
-        # self.probabilities = tf.keras.layers.Softmax(name='probabilities')(self.q_values)
-        self.model = tf.keras.models.Model(inputs=input, outputs=[self.q_values])
-        self.model.compile(optimizer=tf.keras.optimizers.legacy.SGD(learning_rate=self.learningRate), loss=tf.keras.losses.MeanSquaredError())
+        q_values = tf.keras.layers.Dense(BOARD_SIZE,name='q_values', kernel_initializer=tf.keras.initializers.variance_scaling())(dense1)
+        probabilities = tf.keras.layers.Softmax(name='probabilities')(q_values)
+        self.training_model = tf.keras.models.Model(inputs=input, outputs=q_values)
+        self.inference_model = tf.keras.models.Model(inputs=input, outputs=[q_values, probabilities])
+        self.training_model.compile(optimizer=tf.keras.optimizers.legacy.SGD(learning_rate=self.learningRate), loss=tf.keras.losses.MeanSquaredError())
 
 
 class NNQPlayer(Player):
@@ -127,16 +68,7 @@ class NNQPlayer(Player):
         self.next_max_log = []
         self.values_log = []
         self.name = name
-        self.nn = QNetwork(name, learning_rate)
-        self.knn = KerasQNetwork(f'keras_{name}', learning_rate)
-        # self.knn.model.summary()
-        # self.model = tf.keras.models.Sequential([
-        #     tf.keras.layers.InputLayer(input_shape=(BOARD_SIZE * 3,)),
-        #     tf.keras.layers.Dense(BOARD_SIZE * 3 * 9, activation='relu'),
-        #     tf.keras.layers.Dense(BOARD_SIZE),
-        #     tf.keras.layers.Softmax(),
-        # ])
-        # self.model.compile(optimizer=tf.keras.optimizers.SGD(learning_rate=learning_rate), loss=tf.keras.losses.MeanSquaredError())
+        self.nn = KerasQNetwork(f'keras_{name}', learning_rate)
         self.training = training
         super().__init__()
 
@@ -173,8 +105,7 @@ class NNQPlayer(Player):
         :param input_pos: The feature vector to be fed into the Neural Network.
         :return: A tuple of probabilities and q values of all actions (including illegal ones).
         """
-        probs, qvalues = TFSN.get_session().run([self.nn.probabilities, self.nn.q_values],
-                                                feed_dict={self.nn.input_positions: [input_pos]})
+        qvalues, probs = self.nn.inference_model.predict(input_pos[np.newaxis, :])
         return probs[0], qvalues[0]
 
     def move(self, board: Board) -> tuple[GameResult, bool]:
@@ -245,16 +176,8 @@ class NNQPlayer(Player):
             targets = self.calculate_targets()
 
             # We convert the input states we have recorded to feature vectors to feed into the training.
-            # print(f'>>>> board_position_log: {self.board_position_log}')
             nn_input = [self.board_state_to_nn_input(x) for x in self.board_position_log]
             nn_input_array = np.stack(nn_input)
             target_array = np.stack(targets) 
             
-            # We run the training step with the recorded inputs and new Q value targets.
-            # print(f'>>>> nn_input: {nn_input}')
-            # print(f'>>>> nn_input_array: {nn_input_array}')
-            # print(f'>>>> targets: {targets}')
-            # print(f'>>>> target_array: {target_array}')
-            self.knn.model.fit(nn_input_array, target_array, epochs=1)
-            TFSN.get_session().run([self.nn.train_step],
-                                   feed_dict={self.nn.input_positions: nn_input, self.nn.target_input: targets})
+            self.nn.training_model.fit(nn_input_array, target_array, epochs=1, verbose=0)
